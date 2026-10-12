@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Cube Rush</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#0a0a1a; font-family:system-ui, sans-serif; color:#fff; user-select:none; }
+  canvas { display:block; width:100%; height:100%; touch-action:none; }
+  #ui { position:fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; display:flex; flex-direction:column; justify-content:space-between; padding:10px; }
+  .top { display:flex; justify-content:space-between; font-size:16px; text-shadow:0 0 10px #0ff; flex-wrap:wrap; gap:8px; }
+  .bottom { display:flex; justify-content:center; gap:8px; pointer-events:auto; flex-wrap:wrap; }
+  button { background:linear-gradient(45deg,#0ff,#f0f); border:none; color:#000; font-weight:bold; padding:10px 16px; border-radius:30px; font-size:14px; box-shadow:0 0 20px #0ff; cursor:pointer; }
+  button:active { transform:scale(0.95); }
+  button:disabled { opacity:0.4; box-shadow:none; }
+  #menu, #shop, #gameover { position:fixed; inset:0; background:rgba(0,0,0,0.85); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; pointer-events:auto; z-index:10; padding:20px; text-align:center; }
+  #shop { display:none; }
+  #gameover { display:none; }
+  .upgrade { display:flex; justify-content:space-between; align-items:center; width:100%; max-width:400px; background:#1a1a3a; padding:10px 16px; border-radius:10px; margin:5px 0; gap:10px; }
+  .upgrade button { padding:8px 14px; font-size:13px; }
+  h1 { font-size:32px; text-shadow:0 0 20px #0ff; }
+  h2 { font-size:24px; text-shadow:0 0 15px #f0f; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui">
+  <div class="top">
+    <div>امتیاز: <span id="score">0</span></div>
+    <div>سکه: <span id="coins">0</span></div>
+    <div>کمبو: <span id="combo">x1</span></div>
+    <div>سپر: <span id="shield">0</span></div>
+  </div>
+  <div class="bottom">
+    <button id="shopBtn">🛒 فروشگاه</button>
+    <button id="dailyBtn">🎁 جایزه</button>
+    <button id="restartBtn">🔄 شروع مجدد</button>
+  </div>
+</div>
+
+<div id="menu">
+  <h1>Cube Rush</h1>
+  <p>با کشیدن انگشت، مکعب را حرکت بده</p>
+  <button id="startBtn">شروع بازی</button>
+</div>
+
+<div id="shop">
+  <h2>فروشگاه</h2>
+  <div id="upgrades"></div>
+  <button id="closeShop">بستن</button>
+</div>
+
+<div id="gameover">
+  <h2>باختی!</h2>
+  <p>امتیاز: <span id="finalScore">0</span></p>
+  <p>سکه: <span id="finalCoins">0</span></p>
+  <button id="retryBtn">دوباره</button>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+window.addEventListener('resize', resize);
+resize();
+
+let state = 'menu';
+let score = 0, coins = 0, combo = 1, shield = 0;
+let player = { x: W/2, y: H-150, w: 50, h: 50 };
+let obstacles = [], coinItems = [], particles = [];
+let lastTime = 0, spawnTimer = 0, coinTimer = 0, invincible = 0;
+let magnetRadius = 0, coinValue = 1, scoreMultiplier = 1, maxShield = 1, lastDaily = '';
+
+const saveKey = 'cubeRushSave';
+function load() {
+  const data = localStorage.getItem(saveKey);
+  if (data) {
+    const s = JSON.parse(data);
+    coins = s.coins || 0;
+    maxShield = s.maxShield || 1;
+    magnetRadius = s.magnetRadius || 0;
+    coinValue = s.coinValue || 1;
+    scoreMultiplier = s.scoreMultiplier || 1;
+    lastDaily = s.lastDaily || '';
+  }
+}
+function save() {
+  localStorage.setItem(saveKey, JSON.stringify({ coins, maxShield, magnetRadius, coinValue, scoreMultiplier, lastDaily }));
+}
+load();
+
+const upgrades = [
+  { id: 'shield', name: 'سپر', desc: 'حداکثر سپر +1', baseCost: 100, level: 0, max: 5 },
+  { id: 'magnet', name: 'آهنربا', desc: 'شعاع جذب سکه +20', baseCost: 150, level: 0, max: 5 },
+  { id: 'coinValue', name: 'ارزش سکه', desc: 'ارزش هر سکه +1', baseCost: 200, level: 0, max: 10 },
+  { id: 'scoreMultiplier', name: 'ضریب امتیاز', desc: 'امتیاز +20%', baseCost: 250, level: 0, max: 10 },
+];
+function getCost(u) { return u.baseCost * (u.level + 1); }
+function applyUpgrades() {
+  maxShield = 1 + upgrades.find(u => u.id === 'shield').level;
+  magnetRadius = upgrades.find(u => u.id === 'magnet').level * 20;
+  coinValue = 1 + upgrades.find(u => u.id === 'coinValue').level;
+  scoreMultiplier = 1 + upgrades.find(u => u.id === 'scoreMultiplier').level * 0.2;
+}
+applyUpgrades();
+
+function checkDaily() {
+  const today = new Date().toDateString();
+  if (lastDaily !== today) { coins += 50; lastDaily = today; save(); alert('جایزه روزانه: ۵۰ سکه!'); }
+  else alert('امروز جایزه را گرفته‌ای. فردا بیا!');
+}
+
+let touchX = null;
+canvas.addEventListener('touchstart', e => { e.preventDefault(); touchX = e.touches[0].clientX; });
+canvas.addEventListener('touchmove', e => { e.preventDefault(); touchX = e.touches[0].clientX; });
+canvas.addEventListener('touchend', e => { e.preventDefault(); touchX = null; });
+canvas.addEventListener('mousemove', e => { if (state === 'playing') touchX = e.clientX; });
+
+function resetGame() {
+  score = 0; combo = 1; shield = maxShield;
+  obstacles = []; coinItems = []; particles = [];
+  spawnTimer = 0; coinTimer = 0; invincible = 0;
+  player.x = W/2; player.y = H - 150;
+  state = 'playing';
+  document.getElementById('menu').style.display = 'none';
+  document.getElementById('gameover').style.display = 'none';
+  document.getElementById('shop').style.display = 'none';
+}
+function gameOver() {
+  state = 'gameover';
+  document.getElementById('finalScore').textContent = Math.floor(score);
+  document.getElementById('finalCoins').textContent = coins;
+  document.getElementById('gameover').style.display = 'flex';
+  save();
+}
+function update(dt) {
+  if (state !== 'playing') return;
+  if (touchX !== null) player.x += (touchX - player.x) * 0.2;
+  player.x = Math.max(player.w/2, Math.min(W - player.w/2, player.x));
+  score += dt * 10 * scoreMultiplier;
+  if (invincible > 0) invincible -= dt;
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) {
+    const w = 40 + Math.random() * 60;
+    obstacles.push({ x: Math.random()*(W-w), y: -50, w, h: 20+Math.random()*20, speed: 150+Math.random()*100+score/50 });
+    spawnTimer = Math.max(0.3, 1.2 - score/5000) * (0.8 + Math.random()*0.4);
+  }
+  coinTimer -= dt;
+  if (coinTimer <= 0) {
+    coinItems.push({ x: Math.random()*(W-20)+10, y: -20, r: 10, speed: 150+Math.random()*100+score/50 });
+    coinTimer = 0.5 + Math.random()*1.5;
+  }
+  for (let i = obstacles.length-1; i >= 0; i--) {
+    const o = obstacles[i];
+    o.y += o.speed * dt;
+    if (o.y > H) { obstacles.splice(i,1); continue; }
+    const px = player.x - player.w/2, py = player.y - player.h/2;
+    if (invincible <= 0 && px < o.x+o.w && px+player.w > o.x && py < o.y+o.h && py+player.h > o.y) {
+      if (shield > 0) {
+        shield--; invincible = 1.5; combo = 1;
+        for (let j = 0; j < 10; j++) particles.push({ x: player.x, y: player.y, vx:(Math.random()-0.5)*300, vy:(Math.random()-0.5)*300, life:0.5, color:'#0ff' });
+        obstacles.splice(i,1);
+      } else { gameOver(); return; }
+    }
+  }
+  for (let i = coinItems.length-1; i >= 0; i--) {
+    const c = coinItems[i];
+    c.y += c.speed * dt;
+    if (magnetRadius > 0) {
+      const dx = player.x-c.x, dy = player.y-c.y;
+      const dist = Math.sqrt(dx*dx+dy*dy);
+      if (dist < magnetRadius) { c.x += dx*0.1; c.y += dy*0.1; }
+    }
+    if (c.y > H+20) { coinItems.splice(i,1); continue; }
+    const dx = player.x-c.x, dy = player.y-c.y;
+    if (Math.sqrt(dx*dx+dy*dy) < player.w/2+c.r) {
+      coins += coinValue * Math.floor(combo);
+      combo = Math.min(combo+0.2, 5);
+      for (let j = 0; j < 5; j++) particles.push({ x:c.x, y:c.y, vx:(Math.random()-0.5)*200, vy:(Math.random()-0.5)*200, life:0.4, color:'#ff0' });
+      coinItems.splice(i,1);
+    }
+  }
+  for (let i = particles.length-1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt;
+    if (p.life <= 0) particles.splice(i,1);
+  }
+}
+function draw() {
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0,0,W,H);
+  if (state === 'playing' || state === 'gameover') {
+    if (invincible > 0 && Math.floor(invincible*10)%2 === 0) ctx.globalAlpha = 0.5;
+    ctx.fillStyle = '#0ff'; ctx.shadowColor = '#0ff'; ctx.shadowBlur = 20;
+    ctx.fillRect(player.x-player.w/2, player.y-player.h/2, player.w, player.h);
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+    if (shield > 0) {
+      ctx.strokeStyle = '#0ff'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(player.x, player.y, player.w/2+10, 0, Math.PI*2); ctx.stroke();
+    }
+    ctx.fillStyle = '#f0f'; ctx.shadowColor = '#f0f'; ctx.shadowBlur = 15;
+    for (const o of obstacles) ctx.fillRect(o.x,o.y,o.w,o.h);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#ff0'; ctx.shadowColor = '#ff0'; ctx.shadowBlur = 15;
+    for (const c of coinItems) { ctx.beginPath(); ctx.arc(c.x,c.y,c.r,0,Math.PI*2); ctx.fill(); }
+    ctx.shadowBlur = 0;
+    for (const p of particles) {
+      ctx.globalAlpha = p.life*2; ctx.fillStyle = p.color;
+      ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+function loop(t) {
+  const dt = Math.min((t-lastTime)/1000, 0.1);
+  lastTime = t;
+  update(dt); draw();
+  document.getElementById('score').textContent = Math.floor(score);
+  document.getElementById('coins').textContent = coins;
+  document.getElementById('combo').textContent = 'x'+combo.toFixed(1);
+  document.getElementById('shield').textContent = shield;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+document.getElementById('startBtn').addEventListener('click', resetGame);
+document.getElementById('retryBtn').addEventListener('click', resetGame);
+document.getElementById('restartBtn').addEventListener('click', resetGame);
+document.getElementById('shopBtn').addEventListener('click', () => {
+  if (state === 'playing') state = 'paused';
+  document.getElementById('shop').style.display = 'flex';
+  renderShop();
+});
+document.getElementById('closeShop').addEventListener('click', () => {
+  document.getElementById('shop').style.display = 'none';
+  if (state === 'paused') state = 'playing';
+});
+document.getElementById('dailyBtn').addEventListener('click', checkDaily);
+
+function renderShop() {
+  const container = document.getElementById('upgrades');
+  container.innerHTML = '';
+  upgrades.forEach(u => {
+    const cost = getCost(u);
+    const div = document.createElement('div');
+    div.className = 'upgrade';
+    div.innerHTML = `<div><strong>${u.name}</strong> (Lv ${u.level})<br><small>${u.desc}</small></div>
+      <button ${u.level >= u.max || coins < cost ? 'disabled' : ''} data-id="${u.id}">
+      ${u.level >= u.max ? 'MAX' : cost + ' سکه'}</button>`;
+    container.appendChild(div);
+  });
+  container.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const u = upgrades.find(x => x.id === btn.dataset.id);
+      const cost = getCost(u);
+      if (coins >= cost && u.level < u.max) {
+        coins -= cost; u.level++; applyUpgrades(); save(); renderShop();
+        document.getElementById('coins').textContent = coins;
+      }
+    });
+  });
+}
+document.getElementById('menu').style.display = 'flex';
+</script>
+</body>
+</html>
